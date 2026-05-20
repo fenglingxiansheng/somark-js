@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-pack/
+*.tgz
+*.tsbuildinfo
+.DS_Store
+*.log
+coverage/
+.env
+.env.*
+vendor/somarkdown-viewer/lib/
+examples/output*
