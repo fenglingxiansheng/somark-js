@@ -118,8 +118,10 @@ export function registerParseCommand(program: Command): void {
         if (!files.length) { console.error(chalk.red('File argument required')); process.exit(3) }
         if (isBatch) {
           validateBatchOutput(opts.out as string | undefined, formats)
-          const spinner = ora('Parsing files...').start()
-          const responses = await client.parser.parse({ file: files, formats, elementFormats, extractConfig })
+          const spinner = ora('Submitting parse tasks...').start()
+          const tasks = await client.parser.create({ file: files, formats, elementFormats, extractConfig })
+          spinner.text = 'Waiting for parse tasks...'
+          const responses = await Promise.all(tasks.map(task => task.wait({ timeout: 3600 })))
           spinner.succeed('Done')
           await saveBatchOutputs(files, responses, opts.out as string | undefined, formats)
           renderBatchResults(files, responses, { asyncMode: false, formats, out: opts.out as string | undefined, verbose: !!opts.verbose })
@@ -129,12 +131,16 @@ export function registerParseCommand(program: Command): void {
         const file = files[0]
         const outputPlan = planOutput(file, opts.out as string | undefined, formats, { allowStdout: true })
         if (outputPlan.stdout) {
-          const response = await client.parser.parse({ file, formats, elementFormats, extractConfig })
+          const task = await client.parser.create({ file, formats, elementFormats, extractConfig })
+          console.error(`Task submitted: ${task.id}; waiting for completion...`)
+          const response = await task.wait({ timeout: 3600 })
           process.stdout.write(response.contentForFormat(formats[0]))
           return
         }
-        const spinner = ora(`Parsing ${file}...`).start()
-        const response = await client.parser.parse({ file, formats, elementFormats, extractConfig })
+        const spinner = ora(`Submitting ${file}...`).start()
+        const task = await client.parser.create({ file, formats, elementFormats, extractConfig })
+        spinner.text = `Waiting for task ${task.id}...`
+        const response = await task.wait({ timeout: 3600 })
         spinner.succeed(chalk.green(`Done in ${response.pages} pages`))
         await saveOutputPlan(response, outputPlan)
         for (const output of planPaths(outputPlan)) console.log(`Output saved: ${output}`)

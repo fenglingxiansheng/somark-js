@@ -47,6 +47,8 @@ export class HttpClient {
     file?: { name: string; buffer: Buffer; mimeType: string },
   ): Promise<Record<string, unknown>> {
     const url = this.baseUrl + path
+    // sync/async 都会创建解析任务；超时结果不确定时禁止自动重提，避免后台重复派发。
+    const retrySafe = !(['/parse/sync', '/parse/async'].includes(path) && file)
     let lastError: Error | undefined
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -67,7 +69,7 @@ export class HttpClient {
           clearTimeout(timer)
         }
 
-        if (RETRY_HTTP_STATUSES.has(response.status) && attempt < this.maxRetries) {
+        if (RETRY_HTTP_STATUSES.has(response.status) && retrySafe && attempt < this.maxRetries) {
           await sleep(Math.pow(2, attempt) * 1000)
           continue
         }
@@ -79,7 +81,7 @@ export class HttpClient {
         const result = (await response.json()) as Record<string, unknown>
         const code = (result.code as number) ?? -1
         if (code !== 0) {
-          if (RETRY_CODES.has(code) && attempt < this.maxRetries) {
+          if (RETRY_CODES.has(code) && retrySafe && attempt < this.maxRetries) {
             await sleep(Math.pow(2, attempt) * 1000)
             continue
           }
@@ -88,7 +90,9 @@ export class HttpClient {
         return result
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
-          lastError = new RequestTimeoutError('Request timed out')
+          lastError = new RequestTimeoutError(retrySafe
+            ? 'Request timed out'
+            : 'Request timed out. The server may have accepted this parse request. Do not resubmit; this request did not return a task ID, so contact support to check its status.')
         } else if (err instanceof TypeError && err.message.includes('fetch')) {
           lastError = new ConnectionError(err.message)
         } else if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
@@ -96,7 +100,9 @@ export class HttpClient {
         } else {
           throw err // Don't retry on API logic errors
         }
-        if (attempt < this.maxRetries) await sleep(Math.pow(2, attempt) * 1000)
+        // 仅跳过等待会继续下一轮循环；不安全请求必须立即抛错，其他请求照常退避重试。
+        if (!retrySafe || attempt >= this.maxRetries) throw lastError
+        await sleep(Math.pow(2, attempt) * 1000)
       }
     }
     throw lastError ?? new APIError('Request failed after retries')
