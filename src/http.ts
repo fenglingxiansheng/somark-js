@@ -45,14 +45,18 @@ export class HttpClient {
     path: string,
     data: Record<string, string | string[] | undefined> = {},
     file?: { name: string; buffer: Buffer; mimeType: string },
+    timeoutMsOverride?: number,
   ): Promise<Record<string, unknown>> {
     const url = this.baseUrl + path
+    const deadline = timeoutMsOverride === undefined ? undefined : performance.now() + timeoutMsOverride
     // Both endpoints create parse tasks; disable retries after ambiguous upload failures.
     const retrySafe = !(['/parse/sync', '/parse/async'].includes(path) && file)
     let lastError: Error | undefined
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
+        const timeoutMs = deadline === undefined ? this.timeoutMs : Math.max(0, deadline - performance.now())
+        if (timeoutMs <= 0) throw new RequestTimeoutError('Request timed out')
         const form = this.buildFormData(data)
         if (file) {
           const blob = new Blob([file.buffer], { type: file.mimeType })
@@ -60,7 +64,7 @@ export class HttpClient {
         }
 
         const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
 
         let response: Response
         try {

@@ -1,3 +1,5 @@
+import * as fs from 'fs'
+import * as path from 'path'
 import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
@@ -10,7 +12,7 @@ import {
   type ParseResponse,
 } from '../../models.js'
 import { examples } from '../help.js'
-import { resolveCliFileInputs } from '../../resources/parse-core.js'
+import { ensureFilesExist, resolveCliFileInputs, runLimited } from '../../resources/parse-core.js'
 
 export function registerParseCommand(program: Command): void {
   program
@@ -75,10 +77,10 @@ export function registerParseCommand(program: Command): void {
             const stdoutMode = opts.out === undefined && formats.length === 1
             let response: ParseResponse
             if (stdoutMode) {
-              response = await task.wait()
+              response = await task.wait({ timeout: 3600 })
             } else {
               const spinner = ora(`Waiting for task ${opts.taskId}...`).start()
-              response = await task.wait()
+              response = await task.wait({ timeout: 3600 })
               spinner.succeed('Done')
             }
             response.sourceFileName = response.sourceFileName ?? task.fileName
@@ -100,10 +102,31 @@ export function registerParseCommand(program: Command): void {
         if (opts.async) {
           if (!files.length) { console.error(chalk.red('File argument required for async mode')); process.exit(3) }
           if (isBatch) {
-            const spinner = ora('Submitting tasks...').start()
-            const tasks = await client.parser.create({ file: files, formats, elementFormats, extractConfig })
-            spinner.succeed('Done')
-            renderBatchResults(files, tasks, { asyncMode: true, formats, out: opts.out as string | undefined, verbose: !!opts.verbose })
+            ensureFilesExist(files)
+            const manifest = path.resolve('somark-tasks.jsonl')
+            const outcomes = await runLimited(files, async file => {
+              let taskId = ''
+              try {
+                const task = await client.parser.create({ file, formats, elementFormats, extractConfig })
+                taskId = task.id
+                console.error(`Task submitted: ${file} -> ${taskId}`)
+                fs.appendFileSync(manifest, `${JSON.stringify({ file: path.resolve(file), task_id: taskId })}\n`, 'utf-8')
+                return { file, taskId, error: '' }
+              } catch (err) {
+                return { file, taskId, error: (err as Error).message }
+              }
+            })
+            for (const warning of outcomes.warnings) console.warn(warning)
+            console.table(outcomes.results.map(item => ({
+              file: item.file,
+              status: item.error ? 'failed' : 'submitted',
+              taskId: item.taskId,
+              error: item.error,
+            })))
+            console.log(`Task manifest: ${manifest}`)
+            const failed = outcomes.results.filter(item => item.error).length
+            console.log(`Summary: total=${outcomes.results.length} submitted=${outcomes.results.length - failed} failed=${failed}`)
+            if (failed) process.exitCode = 1
             return
           }
           const file = files[0]
@@ -118,6 +141,7 @@ export function registerParseCommand(program: Command): void {
         if (!files.length) { console.error(chalk.red('File argument required')); process.exit(3) }
         if (isBatch) {
           validateBatchOutput(opts.out as string | undefined, formats)
+          ensureFilesExist(files)
           const spinner = ora('Submitting and processing files...').start()
           const manifest = path.resolve(opts.out as string, 'somark-tasks.jsonl')
           const outcomes = await runLimited(files, async file => {
@@ -136,6 +160,7 @@ export function registerParseCommand(program: Command): void {
               return { file, taskId, outputs: [], error: (err as Error).message }
             }
           })
+          for (const warning of outcomes.warnings) console.warn(warning)
           spinner.succeed('Done')
           const table = outcomes.results.map(item => ({
             file: item.file,

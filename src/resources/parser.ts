@@ -34,9 +34,11 @@ export class DocumentParser {
     }
   }
 
-  private async pollTask(taskId: string): Promise<Record<string, unknown>> {
+  private async pollTask(taskId: string, timeout?: number): Promise<Record<string, unknown>> {
     this.checkApiKey()
-    const data = await this._http.post('/parse/async_check', { task_id: taskId })
+    const data = timeout === undefined
+      ? await this._http.post('/parse/async_check', { task_id: taskId })
+      : await this._http.post('/parse/async_check', { task_id: taskId }, undefined, timeout * 1000)
     emitWarnings(collectApiWarnings(data))
     return data
   }

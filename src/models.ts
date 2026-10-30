@@ -306,7 +306,7 @@ export interface ToImagesResult {
 
 export type TaskStatus = 'queuing' | 'processing' | 'success' | 'failed'
 
-export type TaskRefreshHandler = (taskId: string) => Promise<Record<string, unknown>>
+export type TaskRefreshHandler = (taskId: string, timeout?: number) => Promise<Record<string, unknown>>
 
 export class Task {
   id: string
@@ -325,11 +325,11 @@ export class Task {
     this.warnings = warnings
   }
 
-  async refresh(): Promise<void> {
+  async refresh(timeout?: number): Promise<void> {
     if (!this.refreshHandler) {
       throw new Error('Task cannot refresh without a parser resource. Use client.parser.task(taskId).')
     }
-    const data = await this.refreshHandler(this.id)
+    const data = await this.refreshHandler(this.id, timeout)
     this.applyApi(data)
   }
 
@@ -353,13 +353,17 @@ export class Task {
   async wait(opts: { pollInterval?: number; timeout?: number } = {}): Promise<ParseResponse> {
     const pollInterval = (opts.pollInterval ?? 3) * 1000
     const timeout = (opts.timeout ?? 120) * 1000
-    const start = Date.now()
+    const deadline = performance.now() + timeout
     while (!this.completed) {
-      if (Date.now() - start >= timeout) {
+      const remaining = deadline - performance.now()
+      if (remaining <= 0) {
         throw new ParseTimeoutError(`Task ${this.id} timed out`)
       }
-      await sleep(pollInterval)
-      await this.refresh()
+      await sleep(Math.min(pollInterval, remaining))
+      const requestTimeout = deadline - performance.now()
+      if (requestTimeout <= 0) throw new ParseTimeoutError(`Task ${this.id} timed out`)
+      await this.refresh(requestTimeout / 1000)
+      if (performance.now() >= deadline) throw new ParseTimeoutError(`Task ${this.id} timed out`)
     }
     if (this.status === 'failed') throw new ParseFailedError(`Task ${this.id} failed`)
     return this._result!
