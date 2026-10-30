@@ -47,7 +47,7 @@ export class HttpClient {
     file?: { name: string; buffer: Buffer; mimeType: string },
   ): Promise<Record<string, unknown>> {
     const url = this.baseUrl + path
-    // sync/async 都会创建解析任务；超时结果不确定时禁止自动重提，避免后台重复派发。
+    // Both endpoints create parse tasks; disable retries after ambiguous upload failures.
     const retrySafe = !(['/parse/sync', '/parse/async'].includes(path) && file)
     let lastError: Error | undefined
 
@@ -92,7 +92,9 @@ export class HttpClient {
         if (err instanceof Error && err.name === 'AbortError') {
           lastError = new RequestTimeoutError(retrySafe
             ? 'Request timed out'
-            : 'Request timed out. The server may have accepted this parse request. Do not resubmit; this request did not return a task ID, so contact support to check its status.')
+            : path === '/parse/async'
+              ? 'Connection timed out.'
+              : 'Connection timed out. Please use the async API.')
         } else if (err instanceof TypeError && err.message.includes('fetch')) {
           lastError = new ConnectionError(err.message)
         } else if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
@@ -100,7 +102,7 @@ export class HttpClient {
         } else {
           throw err // Don't retry on API logic errors
         }
-        // 仅跳过等待会继续下一轮循环；不安全请求必须立即抛错，其他请求照常退避重试。
+        // Throw immediately for unsafe submissions; otherwise the loop would resend the file.
         if (!retrySafe || attempt >= this.maxRetries) throw lastError
         await sleep(Math.pow(2, attempt) * 1000)
       }

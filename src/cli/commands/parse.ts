@@ -118,13 +118,36 @@ export function registerParseCommand(program: Command): void {
         if (!files.length) { console.error(chalk.red('File argument required')); process.exit(3) }
         if (isBatch) {
           validateBatchOutput(opts.out as string | undefined, formats)
-          const spinner = ora('Submitting parse tasks...').start()
-          const tasks = await client.parser.create({ file: files, formats, elementFormats, extractConfig })
-          spinner.text = 'Waiting for parse tasks...'
-          const responses = await Promise.all(tasks.map(task => task.wait({ timeout: 3600 })))
+          const spinner = ora('Submitting and processing files...').start()
+          const manifest = path.resolve(opts.out as string, 'somark-tasks.jsonl')
+          const outcomes = await runLimited(files, async file => {
+            let taskId = ''
+            try {
+              const task = await client.parser.create({ file, formats, elementFormats, extractConfig })
+              taskId = task.id
+              console.error(`Task submitted: ${file} -> ${taskId}`)
+              fs.appendFileSync(manifest, `${JSON.stringify({ file: path.resolve(file), task_id: taskId })}\n`, 'utf-8')
+              const response = await task.wait({ timeout: 3600 })
+              response.sourceFileName = response.sourceFileName ?? path.basename(file)
+              const outputPlan = planOutput(file, opts.out as string, formats, { batch: true })
+              await saveOutputPlan(response, outputPlan)
+              return { file, taskId, outputs: planPaths(outputPlan), error: '' }
+            } catch (err) {
+              return { file, taskId, outputs: [], error: (err as Error).message }
+            }
+          })
           spinner.succeed('Done')
-          await saveBatchOutputs(files, responses, opts.out as string | undefined, formats)
-          renderBatchResults(files, responses, { asyncMode: false, formats, out: opts.out as string | undefined, verbose: !!opts.verbose })
+          const table = outcomes.results.map(item => ({
+            file: item.file,
+            status: item.error ? 'failed' : 'success',
+            taskId: item.taskId,
+            outputOrError: item.error ? item.error : item.outputs.join(', '),
+          }))
+          console.table(table)
+          console.log(`Task manifest: ${manifest}`)
+          const failed = outcomes.results.filter(item => item.error).length
+          console.log(`Summary: total=${outcomes.results.length} success=${outcomes.results.length - failed} failed=${failed}`)
+          if (failed) process.exitCode = 1
           return
         }
 
